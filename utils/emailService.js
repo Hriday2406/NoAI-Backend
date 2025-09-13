@@ -2,6 +2,12 @@ const nodemailer = require('nodemailer');
 
 // Create reusable transporter object using the default SMTP transport
 const createTransporter = () => {
+  // Use console output if email credentials are not configured
+  if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.log('Email credentials not configured, using console output for OTP');
+    return null; // Will trigger console output mode
+  }
+
   return nodemailer.createTransporter({
     host: process.env.EMAIL_HOST,
     port: process.env.EMAIL_PORT,
@@ -28,6 +34,17 @@ const sendOTPEmail = async (email, otp, purpose = 'verification') => {
       ? `Your login OTP is: ${otp}. This OTP will expire in 10 minutes.`
       : `Your email verification OTP is: ${otp}. This OTP will expire in 10 minutes.`;
 
+    // If no transporter (email not configured), log to console for development
+    if (!transporter) {
+      console.log('\n=== OTP EMAIL (Development Mode) ===');
+      console.log(`To: ${email}`);
+      console.log(`Subject: ${subject}`);
+      console.log(`Message: ${message}`);
+      console.log(`OTP: ${otp}`);
+      console.log('=====================================\n');
+      return { success: true, messageId: 'console-output', mode: 'development' };
+    }
+
     const mailOptions = {
       from: `"NoAI Backend" <${process.env.EMAIL_USER}>`,
       to: email,
@@ -51,7 +68,7 @@ const sendOTPEmail = async (email, otp, purpose = 'verification') => {
 
     const info = await transporter.sendMail(mailOptions);
     console.log('OTP email sent successfully:', info.messageId);
-    return { success: true, messageId: info.messageId };
+    return { success: true, messageId: info.messageId, mode: 'email' };
   } catch (error) {
     console.error('Error sending OTP email:', error);
     throw new Error('Failed to send OTP email');
