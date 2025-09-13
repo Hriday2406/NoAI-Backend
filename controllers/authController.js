@@ -17,12 +17,12 @@ const register = async (req, res, next) => {
       });
     }
 
-    // Check if user already exists and is verified
+    // Check if user already exists - do not allow re-registration
     const existingUser = await User.findOne({ email });
-    if (existingUser && existingUser.isVerified) {
+    if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: 'User already exists and is verified'
+        message: 'User already exists. Please use login instead.'
       });
     }
 
@@ -30,30 +30,14 @@ const register = async (req, res, next) => {
     const otp = generateOTP();
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    // Create or update user with OTP
-    let user;
-    if (existingUser) {
-      // Update existing unverified user
-      user = await User.findByIdAndUpdate(
-        existingUser._id,
-        {
-          name,
-          otp,
-          otpExpires,
-          isVerified: false
-        },
-        { new: true }
-      );
-    } else {
-      // Create new user
-      user = await User.create({
-        name,
-        email,
-        otp,
-        otpExpires,
-        isVerified: false
-      });
-    }
+    // Create new user
+    const user = await User.create({
+      name,
+      email,
+      otp,
+      otpExpires,
+      isVerified: false
+    });
 
     // Send OTP email
     await sendOTPEmail(email, otp, 'verification');
