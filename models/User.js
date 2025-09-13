@@ -18,11 +18,17 @@ const userSchema = new mongoose.Schema({
       'Please provide a valid email'
     ]
   },
-  password: {
+  otp: {
     type: String,
-    required: [true, 'Please provide a password'],
-    minlength: [6, 'Password must be at least 6 characters'],
     select: false
+  },
+  otpExpires: {
+    type: Date,
+    select: false
+  },
+  isVerified: {
+    type: Boolean,
+    default: false
   },
   role: {
     type: String,
@@ -37,30 +43,38 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Hash password before saving
+// Hash OTP before saving
 userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) {
+  if (!this.isModified('otp') || !this.otp) {
     return next();
   }
   
   try {
     const salt = await bcrypt.genSalt(12);
-    this.password = await bcrypt.hash(this.password, salt);
+    this.otp = await bcrypt.hash(this.otp, salt);
     next();
   } catch (error) {
     next(error);
   }
 });
 
-// Compare password method
-userSchema.methods.comparePassword = async function(enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
+// Compare OTP method
+userSchema.methods.compareOTP = async function(enteredOTP) {
+  if (!this.otp) return false;
+  return await bcrypt.compare(enteredOTP, this.otp);
 };
 
-// Remove password from JSON output
+// Check if OTP is expired
+userSchema.methods.isOTPExpired = function() {
+  if (!this.otpExpires) return true;
+  return Date.now() > this.otpExpires;
+};
+
+// Remove sensitive data from JSON output
 userSchema.methods.toJSON = function() {
   const user = this.toObject();
-  delete user.password;
+  delete user.otp;
+  delete user.otpExpires;
   return user;
 };
 

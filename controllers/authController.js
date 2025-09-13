@@ -1,36 +1,122 @@
 const User = require('../models/User');
 const { generateToken } = require('../middleware/auth');
+const { generateOTP, sendOTPEmail } = require('../utils/emailService');
 
-// @desc    Register user
+// @desc    Send OTP for registration
 // @route   POST /api/auth/register
 // @access  Public
 const register = async (req, res, next) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email } = req.body;
 
-    // Check if user exists
-    const userExists = await User.findOne({ email });
-
-    if (userExists) {
+    // Validate required fields
+    if (!name || !email) {
       return res.status(400).json({
         success: false,
-        message: 'User already exists'
+        message: 'Please provide name and email'
       });
     }
 
-    // Create user
+    // Check if user already exists - do not allow re-registration
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'User already exists. Please use login instead.'
+      });
+    }
+
+    // Generate OTP
+    const otp = generateOTP();
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Create new user
     const user = await User.create({
       name,
       email,
-      password
+      otp,
+      otpExpires,
+      isVerified: false
     });
+
+    // Send OTP email
+    await sendOTPEmail(email, otp, 'verification');
+
+    res.status(200).json({
+      success: true,
+      message: 'OTP sent to your email for verification',
+      data: {
+        email: user.email,
+        message: 'Please check your email for OTP'
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Verify OTP and complete registration
+// @route   POST /api/auth/verify-otp
+// @access  Public
+const verifyOTP = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+
+    // Validate required fields
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide email and OTP'
+      });
+    }
+
+    // Find user with OTP fields
+    const user = await User.findOne({ email }).select('+otp +otpExpires');
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email'
+      });
+    }
+
+    // Check if OTP exists
+    if (!user.otp || !user.otpExpires) {
+      return res.status(400).json({
+        success: false,
+        message: 'No OTP found. Please request a new OTP'
+      });
+    }
+
+    // Check if OTP is expired
+    if (user.isOTPExpired()) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Please request a new OTP'
+      });
+    }
+
+    // Verify OTP
+    const isOTPValid = await user.compareOTP(otp);
+    if (!isOTPValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP'
+      });
+    }
+
+    // Clear OTP and verify user
+    user.otp = undefined;
+    user.otpExpires = undefined;
+    user.isVerified = true;
+    await user.save();
 
     // Generate token
     const token = generateToken(user._id);
 
-    res.status(201).json({
+    res.status(200).json({
       success: true,
-      message: 'User registered successfully',
+      message: 'Registration completed successfully',
       data: {
         user,
         token
@@ -41,38 +127,36 @@ const register = async (req, res, next) => {
   }
 };
 
-// @desc    Login user
+// @desc    Send OTP for login
 // @route   POST /api/auth/login
 // @access  Public
 const login = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { email } = req.body;
 
-    // Validate email & password
-    if (!email || !password) {
+    // Validate email
+    if (!email) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide an email and password'
+        message: 'Please provide an email'
       });
     }
 
     // Check for user
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email });
 
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials'
+        message: 'User not found. Please register first.'
       });
     }
 
-    // Check if password matches
-    const isMatch = await user.comparePassword(password);
-
-    if (!isMatch) {
+    // Check if user is verified
+    if (!user.isVerified) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials'
+        message: 'Please verify your email first'
       });
     }
 
@@ -83,6 +167,101 @@ const login = async (req, res, next) => {
         message: 'Account is deactivated'
       });
     }
+
+    // Generate OTP
+    const otp = generateOTP();
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Update user with login OTP
+    user.otp = otp;
+    user.otpExpires = otpExpires;
+    await user.save();
+
+    // Send OTP email
+    await sendOTPEmail(email, otp, 'login');
+
+    res.status(200).json({
+      success: true,
+      message: 'Login OTP sent to your email',
+      data: {
+        email: user.email,
+        message: 'Please check your email for login OTP'
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Verify login OTP and complete login
+// @route   POST /api/auth/verify-login-otp
+// @access  Public
+const verifyLoginOTP = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+
+    // Validate required fields
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide email and OTP'
+      });
+    }
+
+    // Find user with OTP fields
+    const user = await User.findOne({ email }).select('+otp +otpExpires');
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email'
+      });
+    }
+
+    // Check if user is verified and active
+    if (!user.isVerified) {
+      return res.status(401).json({
+        success: false,
+        message: 'Please verify your email first'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is deactivated'
+      });
+    }
+
+    // Check if OTP exists
+    if (!user.otp || !user.otpExpires) {
+      return res.status(400).json({
+        success: false,
+        message: 'No OTP found. Please request a new login OTP'
+      });
+    }
+
+    // Check if OTP is expired
+    if (user.isOTPExpired()) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Please request a new login OTP'
+      });
+    }
+
+    // Verify OTP
+    const isOTPValid = await user.compareOTP(otp);
+    if (!isOTPValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP'
+      });
+    }
+
+    // Clear OTP
+    user.otp = undefined;
+    user.otpExpires = undefined;
+    await user.save();
 
     // Generate token
     const token = generateToken(user._id);
@@ -97,6 +276,7 @@ const login = async (req, res, next) => {
           email: user.email,
           role: user.role,
           isActive: user.isActive,
+          isVerified: user.isVerified,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt
         },
@@ -160,7 +340,9 @@ const updateProfile = async (req, res, next) => {
 
 module.exports = {
   register,
+  verifyOTP,
   login,
+  verifyLoginOTP,
   getMe,
   updateProfile
 };
